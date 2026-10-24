@@ -1,5 +1,4 @@
 const path = require('node:path');
-const fs = require('node:fs');
 const crypto = require('node:crypto');
 const express = require('express');
 const multer = require('multer');
@@ -62,9 +61,9 @@ function rateLimit({ windowMs, max }) {
   };
 }
 
-function createApp({ db, uploadsDir, adminToken = '', submitLimit = { windowMs: 10 * 60 * 1000, max: 10 } }) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+const MIME = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' };
 
+function createApp({ store, adminToken = '', submitLimit = { windowMs: 10 * 60 * 1000, max: 10 } }) {
   const app = express();
   app.set('trust proxy', 'loopback');
   app.disable('x-powered-by');
@@ -80,38 +79,6 @@ function createApp({ db, uploadsDir, adminToken = '', submitLimit = { windowMs: 
     limits: { fileSize: MAX_IMAGE_BYTES, files: MAX_IMAGES, fields: 10 },
   });
 
-  const stmt = {
-    insertSkin: db.prepare('INSERT INTO skins (name, code, author, description) VALUES (?, ?, ?, ?)'),
-    insertImage: db.prepare('INSERT INTO skin_images (skin_id, filename, position) VALUES (?, ?, ?)'),
-    insertTag: db.prepare('INSERT OR IGNORE INTO skin_tags (skin_id, tag) VALUES (?, ?)'),
-    getSkin: db.prepare('SELECT * FROM skins WHERE id = ?'),
-    imagesFor: db.prepare('SELECT filename FROM skin_images WHERE skin_id = ? ORDER BY position'),
-    tagsFor: db.prepare('SELECT tag FROM skin_tags WHERE skin_id = ? ORDER BY tag'),
-    incCopies: db.prepare('UPDATE skins SET copies = copies + 1 WHERE id = ?'),
-    hasLike: db.prepare('SELECT 1 FROM skin_likes WHERE skin_id = ? AND voter = ?'),
-    addLike: db.prepare('INSERT INTO skin_likes (skin_id, voter) VALUES (?, ?)'),
-    delLike: db.prepare('DELETE FROM skin_likes WHERE skin_id = ? AND voter = ?'),
-    syncLikes: db.prepare('UPDATE skins SET likes = (SELECT COUNT(*) FROM skin_likes WHERE skin_id = ?) WHERE id = ?'),
-    deleteSkin: db.prepare('DELETE FROM skins WHERE id = ?'),
-    topTags: db.prepare('SELECT tag, COUNT(*) AS count FROM skin_tags GROUP BY tag ORDER BY count DESC, tag LIMIT 20'),
-  };
-
-  function serialize(row, voter) {
-    return {
-      id: row.id,
-      name: row.name,
-      code: row.code,
-      author: row.author,
-      description: row.description,
-      copies: row.copies,
-      likes: row.likes,
-      liked: voter ? Boolean(stmt.hasLike.get(row.id, voter)) : false,
-      createdAt: row.created_at,
-      images: stmt.imagesFor.all(row.id).map((i) => `/uploads/${i.filename}`),
-      tags: stmt.tagsFor.all(row.id).map((t) => t.tag),
-    };
-  }
-
   function parseId(req, res) {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) {
@@ -121,33 +88,22 @@ function createApp({ db, uploadsDir, adminToken = '', submitLimit = { windowMs: 
     return id;
   }
 
-  app.get('/api/skins', (req, res) => {
+  app.get('/api/skins', async (req, res) => {
     const q = cleanText(req.query.q, 100);
     const tag = cleanText(req.query.tag, LIMITS.tag).toLowerCase();
-    const sort = { popular: 'copies DESC, id DESC', likes: 'likes DESC, id DESC' }[req.query.sort] || 'id DESC';
+    const sort = ['popular', 'likes'].includes(req.query.sort) ? req.query.sort : 'recent';
     const page = Math.max(1, Math.min(1000, Number.parseInt(req.query.page, 10) || 1));
 
-    const where = [];
-    const params = [];
-    if (q) {
-      const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
-      where.push("(name LIKE ? ESCAPE '\\' OR author LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' OR code = ?)");
-      params.push(like, like, like, q);
-    }
-    if (tag) {
-      where.push('id IN (SELECT skin_id FROM skin_tags WHERE tag = ?)');
-      params.push(tag);
-    }
-    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-
-    const total = db.prepare(`SELECT COUNT(*) AS n FROM skins ${whereSql}`).get(...params).n;
-    const rows = db
-      .prepare(`SELECT * FROM skins ${whereSql} ORDER BY ${sort} LIMIT ? OFFSET ?`)
-      .all(...params, PAGE_SIZE, (page - 1) * PAGE_SIZE);
-
-    const voter = voterId(req);
+    const { total, skins } = await store.listSkins({
+      q,
+      tag,
+      sort,
+      limit: PAGE_SIZE,
+      offset: (page - 1) * PAGE_SIZE,
+      voter: voterId(req),
+    });
     res.json({
-      skins: rows.map((r) => serialize(r, voter)),
+      skins,
       page,
       pageSize: PAGE_SIZE,
       total,
@@ -155,20 +111,20 @@ function createApp({ db, uploadsDir, adminToken = '', submitLimit = { windowMs: 
     });
   });
 
-  app.get('/api/tags', (req, res) => {
-    res.json({ tags: stmt.topTags.all() });
+  app.get('/api/tags', async (req, res) => {
+    res.json({ tags: await store.topTags() });
   });
 
-  app.get('/api/skins/:id', (req, res) => {
+  app.get('/api/skins/:id', async (req, res) => {
     const id = parseId(req, res);
     if (id === null) return;
-    const row = stmt.getSkin.get(id);
-    if (!row) return res.status(404).json({ error: 'Skin não encontrada.' });
-    res.json(serialize(row, voterId(req)));
+    const skin = await store.getSkin(id, voterId(req));
+    if (!skin) return res.status(404).json({ error: 'Skin não encontrada.' });
+    res.json(skin);
   });
 
   app.post('/api/skins', rateLimit(submitLimit), (req, res, next) => {
-    upload.array('images', MAX_IMAGES)(req, res, (err) => {
+    upload.array('images', MAX_IMAGES)(req, res, async (err) => {
       if (err instanceof multer.MulterError) {
         const messages = {
           LIMIT_FILE_SIZE: 'Cada imagem pode ter no máximo 5 MB.',
@@ -194,53 +150,41 @@ function createApp({ db, uploadsDir, adminToken = '', submitLimit = { windowMs: 
       for (const file of files) {
         const ext = detectImageType(file.buffer);
         if (!ext) return res.status(400).json({ error: 'Formato de imagem não suportado. Use PNG, JPG, WEBP ou GIF.' });
-        images.push({ buffer: file.buffer, filename: `${crypto.randomUUID()}.${ext}` });
+        images.push({ buffer: file.buffer, path: `${crypto.randomUUID()}.${ext}`, contentType: MIME[ext] });
       }
 
-      const written = [];
+      const uploaded = [];
       try {
         for (const img of images) {
-          fs.writeFileSync(path.join(uploadsDir, img.filename), img.buffer, { flag: 'wx' });
-          written.push(img.filename);
+          await store.uploadImage(img.path, img.buffer, img.contentType);
+          uploaded.push(img.path);
         }
-        const id = db.transaction(() => {
-          const skinId = stmt.insertSkin.run(name, code, author, description).lastInsertRowid;
-          images.forEach((img, i) => stmt.insertImage.run(skinId, img.filename, i));
-          tags.forEach((t) => stmt.insertTag.run(skinId, t));
-          return Number(skinId);
-        })();
-        res.status(201).json(serialize(stmt.getSkin.get(id), voterId(req)));
+        const skin = await store.createSkin({ name, code, author, description, tags, images: uploaded });
+        res.status(201).json(skin);
       } catch (e) {
-        for (const f of written) fs.rmSync(path.join(uploadsDir, f), { force: true });
+        await store.removeImages(uploaded).catch(() => {});
         next(e);
       }
     });
   });
 
-  app.post('/api/skins/:id/copy', (req, res) => {
+  app.post('/api/skins/:id/copy', async (req, res) => {
     const id = parseId(req, res);
     if (id === null) return;
-    const result = stmt.incCopies.run(id);
-    if (result.changes === 0) return res.status(404).json({ error: 'Skin não encontrada.' });
-    res.json({ copies: stmt.getSkin.get(id).copies });
+    const copies = await store.incrementCopies(id);
+    if (copies === null) return res.status(404).json({ error: 'Skin não encontrada.' });
+    res.json({ copies });
   });
 
-  app.post('/api/skins/:id/like', (req, res) => {
+  app.post('/api/skins/:id/like', async (req, res) => {
     const id = parseId(req, res);
     if (id === null) return;
-    if (!stmt.getSkin.get(id)) return res.status(404).json({ error: 'Skin não encontrada.' });
-    const voter = voterId(req);
-    const liked = db.transaction(() => {
-      const already = stmt.hasLike.get(id, voter);
-      if (already) stmt.delLike.run(id, voter);
-      else stmt.addLike.run(id, voter);
-      stmt.syncLikes.run(id, id);
-      return !already;
-    })();
-    res.json({ liked, likes: stmt.getSkin.get(id).likes });
+    const result = await store.toggleLike(id, voterId(req));
+    if (!result) return res.status(404).json({ error: 'Skin não encontrada.' });
+    res.json(result);
   });
 
-  app.delete('/api/skins/:id', (req, res) => {
+  app.delete('/api/skins/:id', async (req, res) => {
     const token = req.get('x-admin-token') || '';
     const valid =
       adminToken &&
@@ -250,16 +194,14 @@ function createApp({ db, uploadsDir, adminToken = '', submitLimit = { windowMs: 
 
     const id = parseId(req, res);
     if (id === null) return;
-    const files = stmt.imagesFor.all(id);
-    const result = stmt.deleteSkin.run(id);
-    if (result.changes === 0) return res.status(404).json({ error: 'Skin não encontrada.' });
-    for (const f of files) fs.rmSync(path.join(uploadsDir, f.filename), { force: true });
+    const paths = await store.deleteSkin(id);
+    if (paths === null) return res.status(404).json({ error: 'Skin não encontrada.' });
+    await store.removeImages(paths).catch((e) => console.error('Falha ao remover imagens:', e));
     res.status(204).end();
   });
 
   app.use('/api', (req, res) => res.status(404).json({ error: 'Rota não encontrada.' }));
 
-  app.use('/uploads', express.static(uploadsDir, { maxAge: '30d', immutable: true, index: false }));
   app.use(express.static(path.join(__dirname, '..', 'public'), { extensions: ['html'] }));
 
   // eslint-disable-next-line no-unused-vars

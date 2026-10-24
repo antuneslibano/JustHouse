@@ -1,14 +1,21 @@
+const fs = require('node:fs');
 const path = require('node:path');
-const { openDatabase } = require('./src/db');
+const { createSupabaseStore } = require('./src/store');
 const { createApp } = require('./src/app');
 
-const PORT = Number(process.env.PORT) || 3000;
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+const envFile = path.join(__dirname, '.env');
+if (fs.existsSync(envFile)) process.loadEnvFile(envFile);
 
-const db = openDatabase(path.join(DATA_DIR, 'skins.db'));
+const PORT = Number(process.env.PORT) || 3000;
+const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env;
+
+if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+  console.error('Defina SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY (veja o arquivo .env.example).');
+  process.exit(1);
+}
+
 const app = createApp({
-  db,
-  uploadsDir: path.join(DATA_DIR, 'uploads'),
+  store: createSupabaseStore({ url: SUPABASE_URL, serviceRoleKey: SUPABASE_SERVICE_ROLE_KEY }),
   adminToken: process.env.ADMIN_TOKEN || '',
 });
 
