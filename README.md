@@ -8,32 +8,43 @@ Site da comunidade para compartilhar skins do **Just Volleyball** por código, c
 - Formulário de envio: nome, código, imagens (PNG/JPG/WEBP/GIF, até 5 MB cada), autor, descrição e tags
 - Funciona no celular e respeita o modo escuro do sistema
 
-## Configurando o Supabase
+## Deploy automático
 
-O site usa o banco Postgres do Supabase para as skins e o Supabase Storage para as imagens.
+Cada push na branch de produção (`claude/optimistic-hopper-5eckr8`, a branch principal do repositório)
+coloca tudo no ar sozinho:
 
-1. No painel do projeto, abra **SQL Editor → New query**, cole o conteúdo de
-   [`supabase/migrations/001_init.sql`](supabase/migrations/001_init.sql) e clique em **Run**.
-   Isso cria as tabelas, as funções e o bucket público `skin-images`. Pode rodar de novo sem problema
-   (rode de novo sempre que esse arquivo mudar).
-2. Em **Project Settings → API Keys**, copie a chave **service_role** (ou uma *secret key* `sb_secret_…`).
-3. Copie `.env.example` para `.env` e preencha `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY`.
+1. **GitHub Actions** roda os testes contra um Postgres real (`.github/workflows/ci.yml`).
+2. **Netlify** faz o deploy de produção. Antes de publicar, o build roda `npm run migrate`, que aplica
+   no Supabase as migrações de `supabase/migrations/` que ainda não foram aplicadas.
+   Se uma migração falhar, ela é desfeita, o deploy falha e a versão anterior continua no ar.
+3. O site estático e a API (Netlify Function) são publicados juntos.
 
-A chave service_role é secreta: ela fica só no servidor e nunca vai para o navegador.
-As tabelas têm RLS ligado sem políticas públicas, então a chave anon não consegue ler nem alterar nada.
+Previews de branch e de pull request no Netlify **não** rodam migrações, então nunca mexem no banco de produção.
+As migrações aplicadas ficam registradas na tabela `public.app_migrations`.
 
-## Publicando no Netlify
+### Variáveis de ambiente no Netlify
 
-O `netlify.toml` já está configurado: a pasta `public/` é servida como site estático e a API roda
-como Netlify Function (`netlify/functions/api.js`), atendendo em `/api/*`.
+Em **Site configuration → Environment variables**:
 
-1. No Netlify, **Add new site → Import an existing project** e escolha este repositório e a branch.
-   Não precisa preencher comando de build nem pasta de publicação: tudo vem do `netlify.toml`.
-2. Em **Site configuration → Environment variables**, crie:
-   - `SUPABASE_URL` = `https://uojxjcnggbfljtkmurgq.supabase.co`
-   - `SUPABASE_SERVICE_ROLE_KEY` = a chave secreta (marque como *secret*)
-   - `ADMIN_TOKEN` (opcional)
-3. Faça um novo deploy (**Deploys → Trigger deploy**) para as variáveis valerem.
+| Variável                    | Para quê |
+|-----------------------------|----------|
+| `SUPABASE_URL`              | URL do projeto: `https://uojxjcnggbfljtkmurgq.supabase.co` |
+| `SUPABASE_SERVICE_ROLE_KEY` | Chave secreta usada pela API (marque como *secret*) |
+| `SUPABASE_DB_URL`           | Conexão usada pelas migrações. No Supabase: **Connect → Connection string → Session pooler**, com a senha do banco no lugar de `[YOUR-PASSWORD]` (marque como *secret*) |
+| `SUPABASE_DB_CA`            | Opcional. Certificado do Supabase (**Database Settings → SSL Configuration → Download certificate**), colado inteiro. Sem ele a conexão é criptografada, mas o certificado não é verificado |
+| `ADMIN_TOKEN`               | Opcional. Permite apagar skins: `curl -X DELETE -H "x-admin-token: $ADMIN_TOKEN" https://justhouse.netlify.app/api/skins/<id>` |
+
+Use a conexão **Session pooler** (porta 5432 em `*.pooler.supabase.com`). A conexão direta
+(`db.<projeto>.supabase.co`) só funciona por IPv6, que o build do Netlify não tem.
+
+### Mudando o banco
+
+Crie um arquivo novo em `supabase/migrations/` com número maior que o último
+(ex.: `002_adiciona_categoria.sql`). Não edite uma migração que já foi aplicada: ela não roda de novo.
+Prefira SQL que possa rodar mais de uma vez sem erro (`if not exists`, `create or replace`).
+Cada migração roda em uma transação. Para aplicar à mão: `SUPABASE_DB_URL=... npm run migrate`.
+
+## Como as imagens são enviadas
 
 As functions do Netlify aceitam no máximo 6 MB por requisição, por isso as imagens não passam
 pela function: o navegador pede links de upload assinados (`POST /api/uploads`), envia cada imagem
@@ -67,7 +78,9 @@ TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres npm test
 
 O teste cria um banco temporário e o apaga no final.
 
-## Configuração
+## Configuração local
+
+Copie `.env.example` para `.env`. Variáveis usadas pelo servidor local:
 
 | Variável                    | Descrição |
 |-----------------------------|-----------|
@@ -85,6 +98,8 @@ mas nesse caso as imagens ficam no bucket e precisam ser removidas à mão.
 server.js                        servidor local (npm start)
 netlify/functions/api.js         API no Netlify
 netlify.toml                     configuração do Netlify
+scripts/migrate.js               aplica as migrações no deploy
+.github/workflows/ci.yml         testes automáticos no GitHub
 src/app.js                       rotas da API e validação
 src/store.js                     acesso ao Supabase (funções SQL e Storage)
 src/netlify.js                   adapta o app para Netlify Functions
