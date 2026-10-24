@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Just Volleyball Skins</title>
+  <meta name="description" content="Compartilhe e encontre códigos de skins do Just Volleyball, com imagens.">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="#/">
+        <img src="/favicon.svg" alt="" width="32" height="32">
+        <span>Just Volleyball <strong>Skins</strong></span>
+      </a>
+      <button class="btn btn-primary" id="open-submit" type="button">+ Enviar skin</button>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="hero">
+      <h1>Skins da comunidade</h1>
+      <p>Encontre uma skin, copie o código e cole no jogo. Criou uma? Compartilhe com uma imagem.</p>
+    </section>
+
+    <form class="toolbar" id="filters" role="search">
+      <input type="search" id="q" name="q" placeholder="Buscar por nome, autor ou código…" aria-label="Buscar skins" autocomplete="off">
+      <select id="sort" name="sort" aria-label="Ordenar">
+        <option value="recent">Mais recentes</option>
+        <option value="popular">Mais copiadas</option>
+        <option value="likes">Mais curtidas</option>
+      </select>
+    </form>
+    <div class="tags" id="tag-list" aria-label="Filtrar por tag"></div>
+
+    <p class="result-info" id="result-info" aria-live="polite"></p>
+    <div class="grid" id="grid"></div>
+    <div class="empty" id="empty" hidden>
+      <p>Nenhuma skin encontrada.</p>
+      <button class="btn" type="button" id="empty-submit">Seja o primeiro a enviar</button>
+    </div>
+    <nav class="pager" id="pager" hidden>
+      <button class="btn" type="button" id="prev">← Anterior</button>
+      <span id="page-label"></span>
+      <button class="btn" type="button" id="next">Próxima →</button>
+    </nav>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">Site de fãs, sem vínculo oficial com o Just Volleyball.</div>
+  </footer>
+
+  <!-- Detalhes da skin -->
+  <dialog id="skin-dialog" class="dialog dialog-wide" aria-labelledby="skin-title">
+    <button class="dialog-close" type="button" data-close aria-label="Fechar">×</button>
+    <div class="detail">
+      <div class="gallery">
+        <img id="skin-main-image" alt="">
+        <div class="thumbs" id="skin-thumbs"></div>
+      </div>
+      <div class="detail-info">
+        <h2 id="skin-title"></h2>
+        <p class="meta" id="skin-meta"></p>
+        <div class="tags" id="skin-tags"></div>
+        <p class="description" id="skin-description"></p>
+        <label class="code-label" for="skin-code">Código da skin</label>
+        <textarea id="skin-code" class="code" readonly rows="4"></textarea>
+        <div class="actions">
+          <button class="btn btn-primary" type="button" id="copy-code">Copiar código</button>
+          <button class="btn" type="button" id="like-skin" aria-pressed="false">♡ <span></span></button>
+          <button class="btn" type="button" id="share-skin">Compartilhar link</button>
+        </div>
+        <p class="stats" id="skin-stats"></p>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Envio de skin -->
+  <dialog id="submit-dialog" class="dialog" aria-labelledby="submit-title">
+    <button class="dialog-close" type="button" data-close aria-label="Fechar">×</button>
+    <h2 id="submit-title">Enviar skin</h2>
+    <form id="submit-form" class="form" novalidate>
+      <label>Nome da skin *
+        <input name="name" required maxlength="60" placeholder="Ex.: Tubarão Neon">
+      </label>
+      <label>Código *
+        <textarea name="code" required maxlength="4000" rows="3" placeholder="Cole aqui o código exportado no jogo"></textarea>
+      </label>
+      <label>Imagens * <small>(até 4 · PNG, JPG, WEBP ou GIF · máx. 5 MB cada)</small>
+        <input name="images" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple required>
+      </label>
+      <div class="preview" id="submit-preview"></div>
+      <label>Seu nome <small>(opcional)</small>
+        <input name="author" maxlength="40" placeholder="Como quer aparecer">
+      </label>
+      <label>Descrição <small>(opcional)</small>
+        <textarea name="description" maxlength="500" rows="2"></textarea>
+      </label>
+      <label>Tags <small>(opcional, separadas por vírgula, até 5)</small>
+        <input name="tags" maxlength="150" placeholder="Ex.: animal, neon, engraçada">
+      </label>
+      <p class="form-error" id="submit-error" role="alert"></p>
+      <button class="btn btn-primary" type="submit" id="submit-button">Publicar skin</button>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
