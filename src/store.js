@@ -6,7 +6,7 @@ const BUCKET = 'skin-images';
 // supabase/migrations; aqui só chamamos essas funções e o Storage.
 //
 // `rpc(nome, args)` deve resolver com o retorno da função SQL.
-// `storage` precisa de upload(path, buffer, contentType), remove(paths) e publicUrl(path).
+// `storage` precisa de createUploadUrl(path), readHead(path, bytes), remove(paths) e publicUrl(path).
 function createStore({ rpc, storage }) {
   const withUrls = (skin) => skin && { ...skin, images: skin.images.map((p) => storage.publicUrl(p)) };
 
@@ -34,7 +34,10 @@ function createStore({ rpc, storage }) {
     toggleLike: (id, voter) => rpc('toggle_like', { p_id: id, p_voter: voter }),
     deleteSkin: (id) => rpc('delete_skin', { p_id: id }),
     topTags: () => rpc('top_tags', { p_limit: 20 }),
-    uploadImage: (path, buffer, contentType) => storage.upload(path, buffer, contentType),
+    hitRateLimit: (key, max, windowSeconds) =>
+      rpc('hit_rate_limit', { p_key: key, p_max: max, p_window_seconds: windowSeconds }),
+    createUploadUrl: (path) => storage.createUploadUrl(path),
+    readImageHead: (path, bytes) => storage.readHead(path, bytes),
     removeImages: (paths) => (paths.length ? storage.remove(paths) : Promise.resolve()),
   };
 }
@@ -53,8 +56,20 @@ function createSupabaseStore({ url, serviceRoleKey }) {
   return createStore({
     rpc: async (name, args) => unwrap(await client.rpc(name, args)),
     storage: {
-      upload: async (path, buffer, contentType) =>
-        unwrap(await bucket.upload(path, buffer, { contentType, cacheControl: '2592000', upsert: false })),
+      createUploadUrl: async (path) => unwrap(await bucket.createSignedUploadUrl(path)).signedUrl,
+      // Lê só os primeiros bytes do arquivo (para conferir o formato) e o tamanho total.
+      // Resolve com null se o arquivo não existir.
+      readHead: async (path, bytes) => {
+        const res = await fetch(bucket.getPublicUrl(path).data.publicUrl, {
+          headers: { Range: `bytes=0-${bytes - 1}`, 'Cache-Control': 'no-cache' },
+        });
+        if (res.status === 404 || res.status === 400) return null;
+        if (!res.ok) throw new Error(`Supabase Storage: HTTP ${res.status}`);
+        const head = Buffer.from(await res.arrayBuffer()).subarray(0, bytes);
+        const range = res.headers.get('content-range');
+        const size = range ? Number(range.split('/')[1]) : head.length;
+        return { head, size };
+      },
       remove: async (paths) => unwrap(await bucket.remove(paths)),
       publicUrl: (path) => bucket.getPublicUrl(path).data.publicUrl,
     },

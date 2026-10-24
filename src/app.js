@@ -1,7 +1,6 @@
 const path = require('node:path');
 const crypto = require('node:crypto');
 const express = require('express');
-const multer = require('multer');
 
 const MAX_IMAGES = 4;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -39,45 +38,33 @@ function parseTags(value) {
   return [...new Set(tags)].slice(0, MAX_TAGS);
 }
 
-function voterId(req) {
-  return crypto.createHash('sha256').update(`${req.ip}|${req.get('user-agent') || ''}`).digest('hex');
-}
-
-// Limitador simples em memória: `max` requisições por janela por IP.
-function rateLimit({ windowMs, max }) {
-  const hits = new Map();
-  return (req, res, next) => {
-    const now = Date.now();
-    const entry = hits.get(req.ip);
-    if (!entry || now > entry.reset) {
-      hits.set(req.ip, { count: 1, reset: now + windowMs });
-      return next();
-    }
-    if (entry.count >= max) {
-      return res.status(429).json({ error: 'Muitas tentativas. Aguarde um pouco e tente novamente.' });
-    }
-    entry.count += 1;
-    next();
-  };
-}
-
 const MIME = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' };
+const EXT_BY_MIME = Object.fromEntries(Object.entries(MIME).map(([ext, mime]) => [mime, ext]));
+const IMAGE_PATH = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(png|jpg|webp|gif)$/;
 
-function createApp({ store, adminToken = '', submitLimit = { windowMs: 10 * 60 * 1000, max: 10 } }) {
+const hash = (value) => crypto.createHash('sha256').update(value).digest('hex');
+
+// `ipHeader`: cabeçalho com o IP real do visitante quando há um proxy na frente
+// (no Netlify, x-nf-client-connection-ip). `uploadLimit`: envios por IP na janela.
+function createApp({
+  store,
+  adminToken = '',
+  ipHeader = '',
+  uploadLimit = { max: 10, windowSeconds: 10 * 60 },
+}) {
   const app = express();
   app.set('trust proxy', 'loopback');
   app.disable('x-powered-by');
+
+  const clientIp = (req) => (ipHeader && req.get(ipHeader)) || req.ip || '';
+  const voterId = (req) => hash(`${clientIp(req)}|${req.get('user-agent') || ''}`);
 
   app.use((req, res, next) => {
     res.set('X-Content-Type-Options', 'nosniff');
     res.set('Referrer-Policy', 'same-origin');
     next();
   });
-
-  const upload = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: MAX_IMAGE_BYTES, files: MAX_IMAGES, fields: 10 },
-  });
+  app.use('/api', express.json({ limit: '32kb' }));
 
   function parseId(req, res) {
     const id = Number(req.params.id);
@@ -123,49 +110,68 @@ function createApp({ store, adminToken = '', submitLimit = { windowMs: 10 * 60 *
     res.json(skin);
   });
 
-  app.post('/api/skins', rateLimit(submitLimit), (req, res, next) => {
-    upload.array('images', MAX_IMAGES)(req, res, async (err) => {
-      if (err instanceof multer.MulterError) {
-        const messages = {
-          LIMIT_FILE_SIZE: 'Cada imagem pode ter no máximo 5 MB.',
-          LIMIT_FILE_COUNT: `Envie no máximo ${MAX_IMAGES} imagens.`,
-          LIMIT_UNEXPECTED_FILE: `Envie no máximo ${MAX_IMAGES} imagens.`,
-        };
-        return res.status(400).json({ error: messages[err.code] || 'Envio inválido.' });
+  // Passo 1 do envio: o navegador informa as imagens e recebe links assinados
+  // para enviá-las direto ao Storage (as functions do Netlify aceitam no máximo 6 MB).
+  app.post('/api/uploads', async (req, res) => {
+    const files = Array.isArray(req.body?.files) ? req.body.files : [];
+    if (files.length === 0) return res.status(400).json({ error: 'Envie pelo menos uma imagem da skin.' });
+    if (files.length > MAX_IMAGES) return res.status(400).json({ error: `Envie no máximo ${MAX_IMAGES} imagens.` });
+
+    const paths = [];
+    for (const file of files) {
+      const ext = EXT_BY_MIME[file?.type];
+      if (!ext) return res.status(400).json({ error: 'Formato de imagem não suportado. Use PNG, JPG, WEBP ou GIF.' });
+      if (!(Number(file.size) > 0 && Number(file.size) <= MAX_IMAGE_BYTES)) {
+        return res.status(400).json({ error: 'Cada imagem pode ter no máximo 5 MB.' });
       }
-      if (err) return next(err);
+      paths.push(`${crypto.randomUUID()}.${ext}`);
+    }
 
-      const name = cleanText(req.body?.name, LIMITS.name);
-      const code = cleanText(req.body?.code, LIMITS.code);
-      const author = cleanText(req.body?.author, LIMITS.author);
-      const description = cleanText(req.body?.description, LIMITS.description);
-      const tags = parseTags(req.body?.tags);
-      const files = req.files || [];
+    const allowed = await store.hitRateLimit(`upload:${hash(clientIp(req))}`, uploadLimit.max, uploadLimit.windowSeconds);
+    if (!allowed) return res.status(429).json({ error: 'Muitos envios. Aguarde alguns minutos e tente novamente.' });
 
-      if (!name) return res.status(400).json({ error: 'Informe o nome da skin.' });
-      if (!code) return res.status(400).json({ error: 'Informe o código da skin.' });
-      if (files.length === 0) return res.status(400).json({ error: 'Envie pelo menos uma imagem da skin.' });
+    const uploads = await Promise.all(paths.map(async (p) => ({ path: p, url: await store.createUploadUrl(p) })));
+    res.json({ uploads });
+  });
 
-      const images = [];
-      for (const file of files) {
-        const ext = detectImageType(file.buffer);
-        if (!ext) return res.status(400).json({ error: 'Formato de imagem não suportado. Use PNG, JPG, WEBP ou GIF.' });
-        images.push({ buffer: file.buffer, path: `${crypto.randomUUID()}.${ext}`, contentType: MIME[ext] });
-      }
+  // Passo 2 do envio: cria a skin com as imagens já enviadas, depois de conferi-las.
+  app.post('/api/skins', async (req, res) => {
+    const body = req.body || {};
+    const name = cleanText(body.name, LIMITS.name);
+    const code = cleanText(body.code, LIMITS.code);
+    const author = cleanText(body.author, LIMITS.author);
+    const description = cleanText(body.description, LIMITS.description);
+    const tags = parseTags(body.tags);
+    const images = Array.isArray(body.images) ? body.images : [];
 
-      const uploaded = [];
-      try {
-        for (const img of images) {
-          await store.uploadImage(img.path, img.buffer, img.contentType);
-          uploaded.push(img.path);
-        }
-        const skin = await store.createSkin({ name, code, author, description, tags, images: uploaded });
-        res.status(201).json(skin);
-      } catch (e) {
-        await store.removeImages(uploaded).catch(() => {});
-        next(e);
-      }
+    if (!name) return res.status(400).json({ error: 'Informe o nome da skin.' });
+    if (!code) return res.status(400).json({ error: 'Informe o código da skin.' });
+    if (images.length === 0) return res.status(400).json({ error: 'Envie pelo menos uma imagem da skin.' });
+    if (images.length > MAX_IMAGES) return res.status(400).json({ error: `Envie no máximo ${MAX_IMAGES} imagens.` });
+    if (!images.every((p) => typeof p === 'string' && IMAGE_PATH.test(p)) || new Set(images).size !== images.length) {
+      return res.status(400).json({ error: 'Imagens inválidas. Tente enviar de novo.' });
+    }
+
+    const checks = await Promise.all(images.map((p) => store.readImageHead(p, 16)));
+    const bad = images.filter((p, i) => {
+      const info = checks[i];
+      return !info || info.size > MAX_IMAGE_BYTES || detectImageType(info.head) !== p.split('.').pop();
     });
+    if (bad.length) {
+      await store.removeImages(bad.filter((p, i) => checks[images.indexOf(p)])).catch(() => {});
+      return res.status(400).json({ error: 'Formato de imagem não suportado. Use PNG, JPG, WEBP ou GIF (até 5 MB).' });
+    }
+
+    try {
+      const skin = await store.createSkin({ name, code, author, description, tags, images });
+      res.status(201).json(skin);
+    } catch (e) {
+      // Caminho já usado por outra skin.
+      if (/skin_images_path_key|duplicate key/.test(e.message)) {
+        return res.status(400).json({ error: 'Imagens inválidas. Tente enviar de novo.' });
+      }
+      throw e;
+    }
   });
 
   app.post('/api/skins/:id/copy', async (req, res) => {

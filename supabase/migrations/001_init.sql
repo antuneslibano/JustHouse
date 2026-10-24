@@ -34,7 +34,14 @@ create table if not exists public.skin_likes (
   primary key (skin_id, voter)
 );
 
+create table if not exists public.rate_limits (
+  key text        not null,
+  at  timestamptz not null default now()
+);
+
 create index if not exists skin_images_skin_idx on public.skin_images (skin_id, position);
+create unique index if not exists skin_images_path_key on public.skin_images (path);
+create index if not exists rate_limits_key_idx on public.rate_limits (key, at);
 create index if not exists skin_tags_tag_idx on public.skin_tags (tag);
 create index if not exists skins_copies_idx on public.skins (copies desc, id desc);
 create index if not exists skins_likes_idx on public.skins (likes desc, id desc);
@@ -43,6 +50,7 @@ alter table public.skins       enable row level security;
 alter table public.skin_images enable row level security;
 alter table public.skin_tags   enable row level security;
 alter table public.skin_likes  enable row level security;
+alter table public.rate_limits enable row level security;
 
 -- Converte uma skin em JSON no formato usado pela API.
 create or replace function public.skin_json(s public.skins, p_voter text)
@@ -213,6 +221,27 @@ as $$
   ) t;
 $$;
 
+-- Registra uma tentativa para `p_key` e diz se ainda está dentro do limite
+-- de `p_max` tentativas na janela de `p_window_seconds`.
+create or replace function public.hit_rate_limit(p_key text, p_max integer, p_window_seconds integer)
+returns boolean
+language plpgsql
+set search_path = public
+as $$
+declare
+  recent integer;
+begin
+  perform pg_advisory_xact_lock(hashtext(p_key));
+  delete from rate_limits where key = p_key and at < now() - make_interval(secs => p_window_seconds);
+  select count(*) into recent from rate_limits where key = p_key;
+  if recent >= p_max then
+    return false;
+  end if;
+  insert into rate_limits (key) values (p_key);
+  return true;
+end;
+$$;
+
 -- As funções só podem ser chamadas pelo servidor.
 do $$
 declare
@@ -226,7 +255,8 @@ begin
     'increment_copies(bigint)',
     'toggle_like(bigint, text)',
     'delete_skin(bigint)',
-    'top_tags(integer)'
+    'top_tags(integer)',
+    'hit_rate_limit(text, integer, integer)'
   ] loop
     execute format('revoke all on function public.%s from public', fn);
     if exists (select 1 from pg_roles where rolname = 'anon') then

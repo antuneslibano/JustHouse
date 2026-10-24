@@ -14,12 +14,34 @@ O site usa o banco Postgres do Supabase para as skins e o Supabase Storage para 
 
 1. No painel do projeto, abra **SQL Editor → New query**, cole o conteúdo de
    [`supabase/migrations/001_init.sql`](supabase/migrations/001_init.sql) e clique em **Run**.
-   Isso cria as tabelas, as funções e o bucket público `skin-images`. Pode rodar de novo sem problema.
+   Isso cria as tabelas, as funções e o bucket público `skin-images`. Pode rodar de novo sem problema
+   (rode de novo sempre que esse arquivo mudar).
 2. Em **Project Settings → API Keys**, copie a chave **service_role** (ou uma *secret key* `sb_secret_…`).
 3. Copie `.env.example` para `.env` e preencha `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY`.
 
 A chave service_role é secreta: ela fica só no servidor e nunca vai para o navegador.
 As tabelas têm RLS ligado sem políticas públicas, então a chave anon não consegue ler nem alterar nada.
+
+## Publicando no Netlify
+
+O `netlify.toml` já está configurado: a pasta `public/` é servida como site estático e a API roda
+como Netlify Function (`netlify/functions/api.js`), atendendo em `/api/*`.
+
+1. No Netlify, **Add new site → Import an existing project** e escolha este repositório e a branch.
+   Não precisa preencher comando de build nem pasta de publicação: tudo vem do `netlify.toml`.
+2. Em **Site configuration → Environment variables**, crie:
+   - `SUPABASE_URL` = `https://uojxjcnggbfljtkmurgq.supabase.co`
+   - `SUPABASE_SERVICE_ROLE_KEY` = a chave secreta (marque como *secret*)
+   - `ADMIN_TOKEN` (opcional)
+3. Faça um novo deploy (**Deploys → Trigger deploy**) para as variáveis valerem.
+
+As functions do Netlify aceitam no máximo 6 MB por requisição, por isso as imagens não passam
+pela function: o navegador pede links de upload assinados (`POST /api/uploads`), envia cada imagem
+direto para o Supabase Storage e então cria a skin (`POST /api/skins`). O servidor confere o formato
+e o tamanho de cada imagem antes de publicar.
+
+O limite de envios (10 a cada 10 minutos por IP) fica guardado no banco, porque as functions não
+guardam memória entre requisições.
 
 ## Rodando localmente
 
@@ -60,9 +82,12 @@ mas nesse caso as imagens ficam no bucket e precisam ser removidas à mão.
 ## Estrutura
 
 ```
-server.js                        inicia o servidor
+server.js                        servidor local (npm start)
+netlify/functions/api.js         API no Netlify
+netlify.toml                     configuração do Netlify
 src/app.js                       rotas da API e validação
 src/store.js                     acesso ao Supabase (funções SQL e Storage)
+src/netlify.js                   adapta o app para Netlify Functions
 supabase/migrations/001_init.sql tabelas, funções e bucket
 public/                          frontend (HTML, CSS e JS puros)
 test/                            testes (node:test)
@@ -74,7 +99,8 @@ test/                            testes (node:test)
 |--------|--------------------------|-----------|
 | GET    | `/api/skins`             | Lista (`q`, `tag`, `sort=recent\|popular\|likes`, `page`) |
 | GET    | `/api/skins/:id`         | Detalhes de uma skin |
-| POST   | `/api/skins`             | Envia skin (multipart: `name`, `code`, `images[]`, `author`, `description`, `tags`) |
+| POST   | `/api/uploads`           | Pede links de upload (JSON: `files: [{ type, size }]`) |
+| POST   | `/api/skins`             | Cria skin (JSON: `name`, `code`, `images` (caminhos de `/api/uploads`), `author`, `description`, `tags`) |
 | POST   | `/api/skins/:id/copy`    | Registra uma cópia do código |
 | POST   | `/api/skins/:id/like`    | Curte / descurte |
 | GET    | `/api/tags`              | Tags mais usadas |

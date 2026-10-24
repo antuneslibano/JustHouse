@@ -266,8 +266,41 @@ function validateSubmit(form) {
   const files = [...form.elements.images.files];
   if (files.length === 0) return 'Envie pelo menos uma imagem da skin.';
   if (files.length > 4) return 'Envie no máximo 4 imagens.';
+  const types = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+  if (files.some((f) => !types.includes(f.type))) return 'Formato de imagem não suportado. Use PNG, JPG, WEBP ou GIF.';
   if (files.some((f) => f.size > 5 * 1024 * 1024)) return 'Cada imagem pode ter no máximo 5 MB.';
   return '';
+}
+
+// Envia as imagens direto para o Storage usando links assinados pelo servidor
+// e depois cria a skin com os caminhos enviados.
+async function publishSkin(form, onStatus) {
+  const files = [...form.elements.images.files];
+  const { uploads } = await api('/api/uploads', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ files: files.map((f) => ({ type: f.type, size: f.size })) }),
+  });
+
+  let done = 0;
+  onStatus(`Enviando imagens (0/${files.length})…`);
+  await Promise.all(uploads.map(async ({ url }, i) => {
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': files[i].type, 'Cache-Control': 'max-age=2592000', 'x-upsert': 'false' },
+      body: files[i],
+    });
+    if (!res.ok) throw new Error('Não foi possível enviar as imagens. Tente novamente.');
+    onStatus(`Enviando imagens (${++done}/${files.length})…`);
+  }));
+
+  onStatus('Publicando…');
+  const fields = Object.fromEntries(['name', 'code', 'author', 'description', 'tags'].map((k) => [k, form.elements[k].value]));
+  return api('/api/skins', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...fields, images: uploads.map((u) => u.path) }),
+  });
 }
 
 els.submitForm.addEventListener('submit', async (e) => {
@@ -279,9 +312,8 @@ els.submitForm.addEventListener('submit', async (e) => {
 
   const button = $('#submit-button');
   button.disabled = true;
-  button.textContent = 'Publicando…';
   try {
-    const skin = await api('/api/skins', { method: 'POST', body: new FormData(form) });
+    const skin = await publishSkin(form, (status) => { button.textContent = status; });
     form.reset();
     previewUrls.forEach(URL.revokeObjectURL);
     previewUrls = [];
