@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { Client } = require('pg');
-const { migrate } = require('../scripts/migrate');
+const { migrate, connectionConfig } = require('../scripts/migrate');
 
 const ADMIN_URL = process.env.TEST_DATABASE_URL;
 
@@ -62,4 +62,18 @@ test('migração com erro é desfeita e não é registrada', opts, async () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('lê a conexão do Supabase e aceita senha com caracteres especiais', () => {
+  const url = 'postgresql://postgres.abc:[YOUR-PASSWORD]@aws-0-sa-east-1.pooler.supabase.com:5432/postgres';
+  assert.throws(() => connectionConfig(url, ''), /\[YOUR-PASSWORD\]/);
+
+  const config = connectionConfig(url, 'a@b#c/d?e:f%g');
+  assert.equal(config.user, 'postgres.abc');
+  assert.equal(config.password, 'a@b#c/d?e:f%g');
+  assert.equal(config.host, 'aws-0-sa-east-1.pooler.supabase.com');
+  assert.equal(config.port, 5432);
+
+  assert.equal(connectionConfig('postgresql://u:p%40ss%23@h:5432/postgres', '').password, 'p@ss#');
+  assert.equal(connectionConfig('postgresql://u:50%off@h:5432/postgres', '').password, '50%off');
 });

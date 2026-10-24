@@ -30,7 +30,8 @@ Em **Site configuration → Environment variables**:
 |-----------------------------|----------|
 | `SUPABASE_URL`              | URL do projeto: `https://uojxjcnggbfljtkmurgq.supabase.co` |
 | `SUPABASE_SERVICE_ROLE_KEY` | Chave secreta usada pela API (marque como *secret*) |
-| `SUPABASE_DB_URL`           | Conexão usada pelas migrações. No Supabase: **Connect → Connection string → Session pooler**, com a senha do banco no lugar de `[YOUR-PASSWORD]` (marque como *secret*) |
+| `SUPABASE_DB_URL`           | Conexão usada pelas migrações. No Supabase: **Connect → Connection string → Session pooler**. Pode deixar `[YOUR-PASSWORD]` na URL se usar a variável abaixo |
+| `SUPABASE_DB_PASSWORD`      | Senha do banco (marque como *secret*). Recomendado: assim caracteres especiais na senha (`@ # / ? : %`) não precisam ser codificados na URL |
 | `SUPABASE_DB_CA`            | Opcional. Certificado do Supabase (**Database Settings → SSL Configuration → Download certificate**), colado inteiro. Sem ele a conexão é criptografada, mas o certificado não é verificado |
 | `ADMIN_TOKEN`               | Opcional. Permite apagar skins: `curl -X DELETE -H "x-admin-token: $ADMIN_TOKEN" https://justhouse.netlify.app/api/skins/<id>` |
 

@@ -3,6 +3,8 @@
 // se uma migração falhar, o deploy falha e a versão anterior continua no ar.
 //
 // SUPABASE_DB_URL: string de conexão "Session pooler" do Supabase.
+// SUPABASE_DB_PASSWORD (opcional): senha do banco. Se definida, substitui a senha da URL,
+//   o que evita ter que codificar caracteres especiais (@ # / ? : %) na URL.
 // SUPABASE_DB_CA (opcional): certificado do Supabase (PEM) para verificar o servidor.
 const fs = require('node:fs');
 const path = require('node:path');
@@ -10,21 +12,61 @@ const { Client } = require('pg');
 
 const DIR = path.join(__dirname, '..', 'supabase', 'migrations');
 
-function connectionConfig(raw) {
-  const url = new URL(raw);
-  const sslmode = url.searchParams.get('sslmode');
-  url.searchParams.delete('sslmode');
-  if (sslmode === 'disable') return { connectionString: url.toString(), ssl: false };
+const decode = (value) => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+};
+
+function connectionConfig(raw, password = process.env.SUPABASE_DB_PASSWORD) {
+  let url;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    throw new Error(
+      'SUPABASE_DB_URL inválida. Se a senha tiver caracteres especiais, deixe-a fora da URL e use SUPABASE_DB_PASSWORD.',
+    );
+  }
+
+  const config = {
+    host: url.hostname,
+    port: Number(url.port) || 5432,
+    user: decode(url.username),
+    password: password || decode(url.password),
+    database: decode(url.pathname.slice(1)) || 'postgres',
+  };
+  if (!config.password || /^\[.*\]$/.test(config.password)) {
+    throw new Error('Senha do banco ausente: troque [YOUR-PASSWORD] na URL ou defina SUPABASE_DB_PASSWORD.');
+  }
+
+  if (url.searchParams.get('sslmode') === 'disable') return { ...config, ssl: false };
 
   const ca = process.env.SUPABASE_DB_CA;
   if (!ca) console.warn('Aviso: SUPABASE_DB_CA não definido; a conexão é criptografada, mas o certificado não é verificado.');
-  return { connectionString: url.toString(), ssl: ca ? { ca } : { rejectUnauthorized: false } };
+  return { ...config, ssl: ca ? { ca } : { rejectUnauthorized: false } };
+}
+
+// Descreve a conexão sem a senha, para ajudar a achar erros de configuração.
+function describe({ user, host, port, database }) {
+  return `usuário "${user}" em ${host}:${port}/${database}`;
 }
 
 async function migrate(databaseUrl, { dir = DIR, log = console.log } = {}) {
   const files = fs.readdirSync(dir).filter((f) => /^\d+_.+\.sql$/.test(f)).sort();
-  const client = new Client(connectionConfig(databaseUrl));
-  await client.connect();
+  const config = connectionConfig(databaseUrl);
+  const client = new Client(config);
+  try {
+    await client.connect();
+  } catch (e) {
+    const hints = [];
+    if (e.code === '28P01') hints.push('a senha foi recusada: confira SUPABASE_DB_PASSWORD (ou a senha na URL)');
+    if (config.host.endsWith('.pooler.supabase.com') && !config.user.includes('.')) {
+      hints.push('no Session pooler o usuário deve ser "postgres.<id do projeto>"');
+    }
+    throw new Error(`Não foi possível conectar (${describe(config)}): ${e.message}${hints.length ? `. Dica: ${hints.join('; ')}.` : ''}`);
+  }
   try {
     // Evita duas execuções ao mesmo tempo (dois deploys seguidos).
     await client.query('SELECT pg_advisory_lock(hashtext($1))', ['justhouse-migrations']);
@@ -72,4 +114,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { migrate };
+module.exports = { migrate, connectionConfig };
