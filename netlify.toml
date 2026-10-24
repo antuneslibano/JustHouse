@@ -4,7 +4,7 @@
 # Só o deploy de produção aplica as migrações no Supabase. Previews de branch
 # e de pull request não mexem no banco.
 [context.production]
-  command = "npm run migrate"
+  command = "node scripts/check-env.js && npm run migrate"
 
 [functions]
   directory = "netlify/functions"
